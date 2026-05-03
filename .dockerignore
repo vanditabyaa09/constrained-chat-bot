@@ -1,0 +1,12 @@
+.git
+.env
+venv/
+node_modules/
+**/__pycache__/
+frontend/dist
+frontend/node_modules
+.DS_Store
+*.pyc
+*.pdf
+faiss_index/
+scratch/

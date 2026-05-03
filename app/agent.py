@@ -77,10 +77,19 @@ Always end your answer with a citation in this format: [Page X]"""
             # Reset conversation history for new document
             self.conversation_history = []
             
-            return f"✓ Successfully loaded PDF with {len(chunks)} chunks"
+            # Get metadata for response
+            from pypdf import PdfReader
+            reader = PdfReader(file_path)
+            
+            return {
+                "filename": os.path.basename(file_path),
+                "pages": len(reader.pages),
+                "chunks": len(chunks),
+                "status": "ready"
+            }
         
         except Exception as e:
-            return f"✗ Error loading PDF: {str(e)}"
+            raise RuntimeError(f"Error loading PDF: {str(e)}")
     
     def _get_context_window(self) -> List[Tuple[str, str]]:
         """Get the last 4 turns from conversation history for context"""
@@ -98,20 +107,27 @@ Always end your answer with a citation in this format: [Page X]"""
         
         return "\n\n".join(context_parts)
     
-    def chat(self, query: str, history: list = None) -> str:
+    def chat(self, query: str, history: list = None) -> dict:
         """
         Answer a user query based on PDF context
         
         Args:
             query: User query string
-            history: Chat history (not currently used, but kept for compatibility)
+            history: Optional list of past messages to override internal history
             
         Returns:
-            Response from the agent
+            Dict containing answer, citations, and in_scope status
         """
         if self.retriever is None:
-            return "Please load a PDF first."
+            return {"answer": "Please load a PDF first.", "citations": [], "in_scope": False}
         
+        # Override internal history if provided (format expected: [{"role": "user", "content": "..."}, ...])
+        if history is not None:
+            self.conversation_history = []
+            for i in range(0, len(history) - 1, 2):
+                if i + 1 < len(history):
+                    self.conversation_history.append((history[i]["content"], history[i+1]["content"]))
+
         try:
             # Embed the query
             query_embedding = self.embedder.embed_query(query)
@@ -120,15 +136,18 @@ Always end your answer with a citation in this format: [Page X]"""
             retrieved_chunks = self.retriever.retrieve(query_embedding, top_k=5)
             
             if not retrieved_chunks:
-                return self.OUT_OF_SCOPE_RESPONSE
+                return {"answer": self.OUT_OF_SCOPE_RESPONSE, "citations": [], "in_scope": False}
             
             # Check relevance
             best_score = retrieved_chunks[0].get("similarity_score", 0)
             if not self.retriever.is_relevant(best_score, self.RELEVANCE_THRESHOLD):
-                return self.OUT_OF_SCOPE_RESPONSE
+                return {"answer": self.OUT_OF_SCOPE_RESPONSE, "citations": [], "in_scope": False}
             
             # Build context from chunks
             context = self._build_context_from_chunks(retrieved_chunks)
+            
+            # Extract citations (unique page numbers)
+            citations = sorted(list(set(chunk.get("metadata", {}).get("page") for chunk in retrieved_chunks if chunk.get("metadata", {}).get("page"))))
             
             # Build messages for ChatHuggingFace
             messages = [
@@ -151,10 +170,14 @@ Always end your answer with a citation in this format: [Page X]"""
             # Store in history
             self.conversation_history.append((query, response_text))
             
-            return response_text
+            return {
+                "answer": response_text,
+                "citations": citations,
+                "in_scope": True
+            }
         
         except Exception as e:
-            return f"Error processing query: {str(e)}"
+            return {"answer": f"Error processing query: {str(e)}", "citations": [], "in_scope": False}
     
     def clear_history(self):
         """Clear conversation history"""
